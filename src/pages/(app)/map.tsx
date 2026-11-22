@@ -112,7 +112,8 @@ export default function MapPage() {
 
         {/* Floating controls over the map */}
         <div className="pointer-events-none absolute inset-x-0 top-0 z-[1000] flex flex-col gap-2 p-3">
-          <div className="pointer-events-auto relative w-full max-w-sm">
+          {/* z-20: the results dropdown must paint above the filter chips below it. */}
+          <div className="pointer-events-auto relative z-20 w-full max-w-sm">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <input
               value={query}
