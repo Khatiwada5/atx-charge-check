@@ -96,3 +96,11 @@
   color: var(--color-muted-foreground) !important;
 }
 .leaflet-control-attribution a { color: var(--color-muted-foreground) !important; }
+
+/* Phones: the bottom sheet covers the map's bottom edge. Pinch-to-zoom
+ * replaces the +/- buttons, and the attribution is lifted above the sheet. */
+@media (max-width: 767px) {
+  .leaflet-control-zoom { display: none; }
+  .leaflet-bottom { margin-bottom: 72px; }
+  .leaflet-control-attribution { font-size: 9px; max-width: 70vw; }
+}

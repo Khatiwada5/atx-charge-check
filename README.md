@@ -6,6 +6,10 @@ A real-time, crowd-sourced status map for 500+ public EV chargers around Austin,
 
 Anyone can view the map without an account. Sign in with Google or GitHub to post a report or vote.
 
+- **Filter by your car:** pick your car (Porsche Taycan, Tesla Model Y, Ioniq 5, Nissan Leaf, …) or just your charge port, and the map shows only chargers it can use. Stations that need an adapter get a dashed pin and name the adapter.
+- **Get there:** *Route* draws the driving route and ETA from your location on the map. *Google Maps* and *Apple Maps* open the phone's navigation app with directions already started.
+- **Phone-first:** full-screen map with a swipeable bottom sheet, a *Near you* list sorted by distance, and large tap targets.
+
 ## How it works
 
 - **Live sync:** reports and votes travel over a WebSocket. A report posted on one phone appears on every open map within a second.
@@ -18,7 +22,8 @@ Anyone can view the map without an account. Sign in with Google or GitHub to pos
 - [DeepSpace](https://docs.deep.space): auth, permission-checked realtime records, scheduled jobs, and hosting on Cloudflare Workers
 - React 19, Vite, Tailwind CSS
 - Leaflet, with Esri's dark-gray basemap
-- Station data from [OpenStreetMap](https://www.openstreetmap.org/copyright) (`amenity=charging_station`)
+- Station and plug data from [OpenStreetMap](https://www.openstreetmap.org/copyright) (`amenity=charging_station`); some fast-charging networks are missing there
+- Route preview from the public [OSRM](https://project-osrm.org/) demo router
 
 ## Project map
 
@@ -29,10 +34,14 @@ Anyone can view the map without an account. Sign in with Google or GitHub to pos
 | `src/lib/station-status.ts` | Pure logic for expiry, vote scoring, and each station's status |
 | `src/cron.ts` | Cleanup job that deletes expired reports and their votes |
 | `src/components/StationMap.tsx` | The Leaflet map with status-colored pins |
-| `src/components/StationPanel.tsx` | Station details, the report buttons, and the vote buttons |
+| `src/components/StationPanel.tsx` | Station details, directions, plug fit, the report buttons, and the vote buttons |
+| `src/components/VehiclePicker.tsx` | The searchable "What do you drive?" picker |
+| `src/lib/plugs.ts` | Plug types, car → charge port list, and the direct/adapter/no-fit rules |
+| `src/lib/geo.ts` | Distances, Google/Apple Maps links, and the route preview (OSRM) |
 | `src/pages/(app)/map.tsx` | The `/map` page: live queries, search, and filters |
 | `src/data/stations.json` | The station catalog from OpenStreetMap |
 | `tests/reports.spec.ts` | Two-driver end-to-end test: report, live sync, confirm, dispute |
+| `tests/vehicle-and-directions.spec.ts` | Phone-sized test: car filter, adapter warning, map hand-offs, route, near you |
 
 ## Run it locally
 

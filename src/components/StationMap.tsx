@@ -3,18 +3,22 @@
  *
  * Pin color = the station's current crowd-reported status (green working,
  * amber busy, red broken, gray no recent reports). Fast (DC) chargers get a
- * larger pin. Clicking a pin selects the station; the parent page owns the
- * selection and shows the detail panel.
+ * larger pin. When a car is chosen, stations it can only use WITH AN ADAPTER
+ * get a hollow, dashed pin so "plugs straight in" stands out.
+ *
+ * Also draws: your location (blue dot) and the driving-route preview line to
+ * the selected station, and zooms to fit that route.
  *
  * Tiles: Esri's "World Dark Gray Canvas" basemap + its label layer — free,
  * no API key, attribution shown bottom-right. Pins sit above both layers.
  */
 
 import { useEffect } from 'react'
-import { CircleMarker, MapContainer, TileLayer, Tooltip, useMap, ZoomControl } from 'react-leaflet'
+import { CircleMarker, MapContainer, Polyline, TileLayer, Tooltip, useMap, ZoomControl } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { Station } from '../lib/stations'
 import type { StationStatus } from '../lib/station-status'
+import type { LatLng } from '../lib/geo'
 
 // Hex, not CSS vars: pins draw on a <canvas> (preferCanvas, fast with 500+
 // markers) and canvas can't resolve var(). Keep in sync with themes.css.
@@ -25,17 +29,21 @@ export const STATUS_COLOR: Record<StationStatus, string> = {
   unknown: '#6b7280',
 }
 
-const AUSTIN: [number, number] = [30.2747, -97.7404]
+const AUSTIN: LatLng = [30.2747, -97.7404]
 
 type Props = {
   stations: Station[]
   statusOf: (id: string) => StationStatus
+  needsAdapter: (id: string) => boolean
   selectedId: string | null
   onSelect: (id: string) => void
-  flyTo: [number, number] | null
+  flyTo: LatLng | null
+  userLoc: LatLng | null
+  route: LatLng[] | null
 }
 
-export default function StationMap({ stations, statusOf, selectedId, onSelect, flyTo }: Props) {
+export default function StationMap(props: Props) {
+  const { stations, statusOf, needsAdapter, selectedId, onSelect, flyTo, userLoc, route } = props
   return (
     <MapContainer
       center={AUSTIN}
@@ -49,7 +57,7 @@ export default function StationMap({ stations, statusOf, selectedId, onSelect, f
       <ZoomControl position="bottomright" />
       <TileLayer
         url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
-        attribution='Basemap &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors · Stations: <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        attribution='Basemap &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors · Stations: <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · Routes: OSRM'
         maxZoom={19}
         maxNativeZoom={16}
       />
@@ -59,31 +67,50 @@ export default function StationMap({ stations, statusOf, selectedId, onSelect, f
         maxNativeZoom={16}
       />
       <FlyTo target={flyTo} />
+      <FitRoute route={route} />
+
+      {route && (
+        <>
+          <Polyline positions={route} pathOptions={{ color: '#0b0d0f', weight: 9, opacity: 0.8 }} />
+          <Polyline positions={route} pathOptions={{ color: '#4f9dff', weight: 5, opacity: 0.95 }} />
+        </>
+      )}
+
       {/* Unknown pins first so reported stations draw on top of them. */}
       {[...stations]
         .sort((a, b) => rank(statusOf(a.id)) - rank(statusOf(b.id)))
         .map((s) => {
           const status = statusOf(s.id)
           const selected = s.id === selectedId
+          const adapter = needsAdapter(s.id)
           return (
             <CircleMarker
               key={s.id}
               center={[s.lat, s.lng]}
               radius={selected ? 11 : s.fast ? 7 : 5}
               pathOptions={{
-                color: selected ? '#ffffff' : '#0d0f11',
-                weight: selected ? 3 : 1.5,
+                color: selected ? '#ffffff' : adapter ? STATUS_COLOR[status] : '#0d0f11',
+                weight: selected ? 3 : adapter ? 2 : 1.5,
+                dashArray: adapter && !selected ? '3 3' : undefined,
                 fillColor: STATUS_COLOR[status],
-                fillOpacity: status === 'unknown' ? 0.55 : 0.95,
+                fillOpacity: adapter ? 0.15 : status === 'unknown' ? 0.55 : 0.95,
               }}
               eventHandlers={{ click: () => onSelect(s.id) }}
             >
               <Tooltip direction="top" offset={[0, -6]}>
                 {s.name}
+                {adapter ? ' · adapter needed' : ''}
               </Tooltip>
             </CircleMarker>
           )
         })}
+
+      {userLoc && (
+        <>
+          <CircleMarker center={userLoc} radius={14} pathOptions={{ stroke: false, fillColor: '#4f9dff', fillOpacity: 0.2 }} interactive={false} />
+          <CircleMarker center={userLoc} radius={6} pathOptions={{ color: '#ffffff', weight: 2, fillColor: '#4f9dff', fillOpacity: 1 }} interactive={false} />
+        </>
+      )}
     </MapContainer>
   )
 }
@@ -93,10 +120,28 @@ function rank(s: StationStatus) {
 }
 
 /** Pans the map when the parent asks (e.g. after picking a search result). */
-function FlyTo({ target }: { target: [number, number] | null }) {
+function FlyTo({ target }: { target: LatLng | null }) {
   const map = useMap()
   useEffect(() => {
     if (target) map.flyTo(target, Math.max(map.getZoom(), 15), { duration: 0.6 })
   }, [target, map])
+  return null
+}
+
+/** Zooms out to show the whole route, leaving room for the bottom sheet. */
+function FitRoute({ route }: { route: LatLng[] | null }) {
+  const map = useMap()
+  useEffect(() => {
+    if (!route || route.length < 2) return
+    const mobile = window.innerWidth < 768
+    // On phones the bottom sheet (46dvh in "peek") covers the lower map, so
+    // reserve that much space or the route's start hides under it.
+    const sheet = mobile ? Math.round(window.innerHeight * 0.46) : 0
+    map.flyToBounds(route, {
+      paddingTopLeft: [40, mobile ? 150 : 120],
+      paddingBottomRight: [40, sheet + 30],
+      duration: 0.7,
+    })
+  }, [route, map])
   return null
 }

@@ -6,10 +6,13 @@
  * collection.
  *
  * Fields: id (OSM element id), name, lat/lng, network, fast (has a DC fast
- * connector: CCS / CHAdeMO / Tesla), ports (capacity, 0 if unknown).
+ * connector: CCS / CHAdeMO / Tesla), ports (capacity, 0 if unknown), and
+ * plugs: connector counts by type (see src/lib/plugs.ts). ~6% of stations
+ * have no connector tags in OpenStreetMap; their `plugs` is empty.
  */
 
 import raw from '../data/stations.json'
+import type { Plug } from './plugs'
 
 export type Station = {
   id: string
@@ -19,6 +22,7 @@ export type Station = {
   network: string
   fast: boolean
   ports: number
+  plugs: Partial<Record<Plug, number>>
 }
 
 export const STATIONS: Station[] = raw as Station[]
