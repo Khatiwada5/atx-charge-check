@@ -2,10 +2,10 @@
  * StationPanel — details for the selected station.
  *
  *   1. Header: name, network, status, distance from you.
- *   2. Get there: "Route" draws the driving route on our map (distance + ETA);
- *      "Google Maps" / "Apple Maps" hand off to the phone's navigation app
- *      with turn-by-turn started. This block sits at the top so it shows in
- *      the collapsed phone sheet.
+ *   2. Get there: "Start" begins in-app turn-by-turn navigation
+ *      (NavigationView); "Preview" draws the route + ETA without starting;
+ *      "Google Maps" / "Apple Maps" hand off to the phone's own nav app.
+ *      This block sits at the top so it shows in the collapsed phone sheet.
  *   3. Plugs: every connector here, and — if a car is chosen — whether it
  *      plugs in directly, needs an adapter (and which), or won't fit.
  *   4. Report now: Working / Busy / Broken + optional note. Posting replaces
@@ -67,13 +67,15 @@ type Props = {
   vehicle: Vehicle | null
   userLoc: LatLng | null
   routeState: RouteState
+  starting: boolean
   onRoute: () => void
+  onStart: () => void
   onClose: () => void
   onSignIn: () => void
 }
 
 export default function StationPanel(props: Props) {
-  const { station, reports, myVotes, now, vehicle, userLoc, routeState, onRoute, onClose, onSignIn } = props
+  const { station, reports, myVotes, now, vehicle, userLoc, routeState, starting, onRoute, onStart, onClose, onSignIn } = props
   const { isSignedIn, userId } = useAuth()
   const reportMut = useMutations<Report>('reports')
   const voteMut = useMutations<Vote>('votes')
@@ -147,14 +149,26 @@ export default function StationPanel(props: Props) {
 
       {/* 2. Get there */}
       <div className="border-b border-border px-4 pb-4" data-testid="directions">
+        <button
+          onClick={onStart}
+          disabled={starting}
+          data-testid="nav-start"
+          className="mb-2 flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-[#1a7f4b] text-base font-bold text-white shadow-lg hover:bg-[#1d8f54] active:scale-[0.99] disabled:opacity-70"
+        >
+          {starting ? <Loader2 className="size-5 animate-spin" /> : <Navigation className="size-5 fill-current" />}
+          {starting ? 'Starting…' : 'Start'}
+          {routeState.kind === 'ready' && !starting && (
+            <span className="font-medium text-white/80">· {formatDuration(routeState.route.durationS)}</span>
+          )}
+        </button>
         <div className="grid grid-cols-3 gap-2">
           <button
             onClick={onRoute}
             disabled={routeState.kind === 'loading'}
-            className="flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg border border-border bg-secondary px-2 py-2 text-xs font-medium text-foreground hover:border-foreground/30 disabled:opacity-60"
+            className="flex min-h-11 items-center justify-center gap-1.5 rounded-lg border border-border bg-secondary px-2 text-xs font-medium text-foreground hover:border-foreground/30 disabled:opacity-60"
           >
-            {routeState.kind === 'loading' ? <Loader2 className="size-4 animate-spin" /> : <RouteIcon className="size-4" />}
-            Route
+            {routeState.kind === 'loading' && !starting ? <Loader2 className="size-4 animate-spin" /> : <RouteIcon className="size-4" />}
+            Preview
           </button>
           <NavLink href={googleMapsUrl(dest)} label="Google Maps" testId="nav-google" />
           <NavLink href={appleMapsUrl(dest, station.name)} label="Apple Maps" testId="nav-apple" />
@@ -334,9 +348,8 @@ function NavLink({ href, label, testId }: { href: string; label: string; testId:
       target="_blank"
       rel="noreferrer"
       data-testid={testId}
-      className="flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg bg-primary px-2 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90"
+      className="flex min-h-11 items-center justify-center rounded-lg border border-border bg-secondary px-2 text-center text-xs font-medium text-foreground hover:border-foreground/30"
     >
-      <Navigation className="size-4" />
       {label}
     </a>
   )

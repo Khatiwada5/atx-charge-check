@@ -2,9 +2,10 @@
  * Location helpers: distance, "open in Google / Apple Maps" links, and the
  * in-app driving route preview.
  *
- * Route preview uses the public OSRM demo router (router.project-osrm.org):
- * free and keyless, but a shared demo server — fine for a preview line, not
- * for turn-by-turn. Real navigation is handed to Google or Apple Maps.
+ * Routes come from the public OSRM demo router (router.project-osrm.org):
+ * free and keyless, a shared demo server. We ask for the full line plus
+ * turn-by-turn steps, which drive the in-app navigation mode (src/lib/nav.ts).
+ * Google / Apple Maps hand-off links are the fallback.
  */
 
 export type LatLng = [number, number]
@@ -43,17 +44,41 @@ export function appleMapsUrl(dest: LatLng, name: string): string {
   return `https://maps.apple.com/?daddr=${dest[0]},${dest[1]}&dirflg=d&q=${encodeURIComponent(name)}`
 }
 
-export type Route = { coords: LatLng[]; distanceM: number; durationS: number }
+export type Maneuver = {
+  type: string
+  modifier?: string
+  exit?: number
+  bearingAfter: number
+  location: LatLng
+}
+
+/** One turn-by-turn step: do `maneuver` at its location, then drive `distanceM` along `name`. */
+export type Step = { name: string; ref?: string; distanceM: number; durationS: number; maneuver: Maneuver }
+
+export type Route = { coords: LatLng[]; distanceM: number; durationS: number; steps: Step[] }
+
+type OsrmStep = {
+  name: string
+  ref?: string
+  distance: number
+  duration: number
+  maneuver: { type: string; modifier?: string; exit?: number; bearing_after: number; location: [number, number] }
+}
 
 export async function fetchRoute(from: LatLng, to: LatLng, signal?: AbortSignal): Promise<Route> {
   const url =
     `https://router.project-osrm.org/route/v1/driving/${from[1]},${from[0]};${to[1]},${to[0]}` +
-    `?overview=full&geometries=geojson`
+    `?overview=full&geometries=geojson&steps=true`
   const res = await fetch(url, { signal })
   if (!res.ok) throw new Error(`Routing service answered ${res.status}`)
   const body = (await res.json()) as {
     code: string
-    routes?: { distance: number; duration: number; geometry: { coordinates: [number, number][] } }[]
+    routes?: {
+      distance: number
+      duration: number
+      geometry: { coordinates: [number, number][] }
+      legs: { steps: OsrmStep[] }[]
+    }[]
   }
   const r = body.routes?.[0]
   if (body.code !== 'Ok' || !r) throw new Error('No driving route found')
@@ -61,6 +86,21 @@ export async function fetchRoute(from: LatLng, to: LatLng, signal?: AbortSignal)
     coords: r.geometry.coordinates.map(([lng, lat]) => [lat, lng]),
     distanceM: r.distance,
     durationS: r.duration,
+    steps: r.legs.flatMap((l) =>
+      l.steps.map((st) => ({
+        name: st.name,
+        ref: st.ref,
+        distanceM: st.distance,
+        durationS: st.duration,
+        maneuver: {
+          type: st.maneuver.type,
+          modifier: st.maneuver.modifier,
+          exit: st.maneuver.exit,
+          bearingAfter: st.maneuver.bearing_after,
+          location: [st.maneuver.location[1], st.maneuver.location[0]] as LatLng,
+        },
+      })),
+    ),
   }
 }
 

@@ -13,9 +13,11 @@
  * no API key, attribution shown bottom-right. Pins sit above both layers.
  */
 
-import { useEffect } from 'react'
-import { CircleMarker, MapContainer, Polyline, TileLayer, Tooltip, useMap, ZoomControl } from 'react-leaflet'
+import { useEffect, useMemo, useRef } from 'react'
+import L from 'leaflet'
+import { CircleMarker, MapContainer, Marker, Polyline, TileLayer, Tooltip, useMap, useMapEvents, ZoomControl } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
+import type { NavFrame } from './NavigationView'
 import type { Station } from '../lib/stations'
 import type { StationStatus } from '../lib/station-status'
 import type { LatLng } from '../lib/geo'
@@ -40,10 +42,15 @@ type Props = {
   flyTo: LatLng | null
   userLoc: LatLng | null
   route: LatLng[] | null
+  /** Turn-by-turn mode: follow this position, draw what's left of the route. */
+  nav: NavFrame | null
+  following: boolean
+  onUserPan: () => void
 }
 
 export default function StationMap(props: Props) {
-  const { stations, statusOf, needsAdapter, selectedId, onSelect, flyTo, userLoc, route } = props
+  const { stations, statusOf, needsAdapter, selectedId, onSelect, flyTo, userLoc, route, nav, following, onUserPan } = props
+  const line = nav ? nav.path : route
   return (
     <MapContainer
       center={AUSTIN}
@@ -66,13 +73,14 @@ export default function StationMap(props: Props) {
         maxZoom={19}
         maxNativeZoom={16}
       />
-      <FlyTo target={flyTo} />
-      <FitRoute route={route} />
+      <FlyTo target={nav ? null : flyTo} />
+      <FitRoute route={nav ? null : route} />
+      <FollowCam frame={nav} following={following} onUserPan={onUserPan} />
 
-      {route && (
+      {line && (
         <>
-          <Polyline positions={route} pathOptions={{ color: '#0b0d0f', weight: 9, opacity: 0.8 }} />
-          <Polyline positions={route} pathOptions={{ color: '#4f9dff', weight: 5, opacity: 0.95 }} />
+          <Polyline positions={line} pathOptions={{ color: '#0b0d0f', weight: nav ? 12 : 9, opacity: 0.8 }} />
+          <Polyline positions={line} pathOptions={{ color: '#4f9dff', weight: nav ? 8 : 5, opacity: 0.95 }} />
         </>
       )}
 
@@ -105,7 +113,9 @@ export default function StationMap(props: Props) {
           )
         })}
 
-      {userLoc && (
+      {nav && <HeadingMarker pos={nav.pos} heading={nav.heading} />}
+
+      {!nav && userLoc && (
         <>
           <CircleMarker center={userLoc} radius={14} pathOptions={{ stroke: false, fillColor: '#4f9dff', fillOpacity: 0.2 }} interactive={false} />
           <CircleMarker center={userLoc} radius={6} pathOptions={{ color: '#ffffff', weight: 2, fillColor: '#4f9dff', fillOpacity: 1 }} interactive={false} />
@@ -126,6 +136,51 @@ function FlyTo({ target }: { target: LatLng | null }) {
     if (target) map.flyTo(target, Math.max(map.getZoom(), 15), { duration: 0.6 })
   }, [target, map])
   return null
+}
+
+/**
+ * Navigation camera: zoomed in on you, placed in the lower third of the screen
+ * so more of the road ahead is visible. Dragging the map pauses following
+ * (the parent shows a Re-center button).
+ */
+function FollowCam({ frame, following, onUserPan }: { frame: NavFrame | null; following: boolean; onUserPan: () => void }) {
+  const map = useMap()
+  const programmatic = useRef(false)
+  useMapEvents({
+    dragstart: () => {
+      if (frame && !programmatic.current) onUserPan()
+    },
+  })
+  useEffect(() => {
+    if (!frame || !following) return
+    const zoom = Math.max(map.getZoom(), 17)
+    const size = map.getSize()
+    const pt = map.project(frame.pos, zoom).subtract([0, size.y * 0.22])
+    programmatic.current = true
+    map.setView(map.unproject(pt, zoom), zoom, { animate: true, duration: 0.8 })
+    const t = setTimeout(() => (programmatic.current = false), 900)
+    return () => clearTimeout(t)
+  }, [frame, following, map])
+  return null
+}
+
+/** Blue arrow pointing the way you're driving (dot until a heading is known). */
+function HeadingMarker({ pos, heading }: { pos: LatLng; heading: number | null }) {
+  const h = heading == null ? null : Math.round(heading / 5) * 5
+  const icon = useMemo(
+    () =>
+      L.divIcon({
+        className: '',
+        iconSize: [44, 44],
+        iconAnchor: [22, 22],
+        html:
+          h == null
+            ? '<div style="width:44px;height:44px;display:grid;place-items:center"><div style="width:18px;height:18px;border-radius:50%;background:#4f9dff;border:3px solid #fff;box-shadow:0 0 0 8px rgba(79,157,255,.25)"></div></div>'
+            : `<svg width="44" height="44" viewBox="0 0 44 44" style="transform:rotate(${h}deg);filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))"><circle cx="22" cy="22" r="20" fill="rgba(79,157,255,.22)"/><path d="M22 6 L34 34 L22 28 L10 34 Z" fill="#4f9dff" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/></svg>`,
+      }),
+    [h],
+  )
+  return <Marker position={pos} icon={icon} interactive={false} zIndexOffset={1000} />
 }
 
 /** Zooms out to show the whole route, leaving room for the bottom sheet. */

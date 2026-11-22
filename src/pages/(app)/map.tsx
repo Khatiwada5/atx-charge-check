@@ -27,12 +27,13 @@ import { Car, ChevronDown, LocateFixed, Loader2, Search, Zap } from 'lucide-reac
 import StationMap from '../../components/StationMap'
 import StationPanel, { STATUS_LABEL, type RouteState } from '../../components/StationPanel'
 import VehiclePicker from '../../components/VehiclePicker'
+import NavigationView, { type NavFrame } from '../../components/NavigationView'
 import { useToast } from '../../components/ui'
 import { cn } from '../../lib/utils'
 import { STATION_BY_ID, STATIONS } from '../../lib/stations'
 import { currentStatus, scoreReports, type StationStatus } from '../../lib/station-status'
 import { compat, hasFastFor, VEHICLE_BY_ID, type Vehicle } from '../../lib/plugs'
-import { distanceMeters, fetchRoute, formatMiles, getLocation, type LatLng } from '../../lib/geo'
+import { distanceMeters, fetchRoute, formatMiles, getLocation, type LatLng, type Route } from '../../lib/geo'
 import type { Report } from '../../schemas/reports-schema'
 import type { Vote } from '../../schemas/votes-schema'
 
@@ -94,6 +95,11 @@ export default function MapPage() {
   const [routeState, setRouteState] = useState<RouteState>({ kind: 'idle' })
   const [sheet, setSheet] = useState<Sheet>('bar')
   const routeAbort = useRef<AbortController | null>(null)
+  // Turn-by-turn mode.
+  const [navigating, setNavigating] = useState<{ stationId: string; route: Route } | null>(null)
+  const [navFrame, setNavFrame] = useState<NavFrame | null>(null)
+  const [following, setFollowing] = useState(true)
+  const [starting, setStarting] = useState(false)
 
   // ── Status ───────────────────────────────────────────────────────────────
   const byStation = useMemo(() => scoreReports(reports, votes, now), [reports, votes, now])
@@ -213,6 +219,46 @@ export default function MapPage() {
     }
   }
 
+  /**
+   * Start in-app navigation: always route from a FRESH fix (the preview may
+   * be from minutes ago), then hand over to NavigationView.
+   */
+  async function startNav() {
+    if (!selected) return
+    // iOS only allows speech that starts inside a tap — prime it now.
+    try {
+      if (typeof speechSynthesis !== 'undefined') speechSynthesis.speak(new SpeechSynthesisUtterance(''))
+    } catch {
+      /* no voice support */
+    }
+    setStarting(true)
+    try {
+      const sim = new URLSearchParams(window.location.search).has('sim')
+      const from = sim && userLoc ? userLoc : await locate()
+      if (!from) return
+      const r = await fetchRoute(from, [selected.lat, selected.lng])
+      setRouteState({ kind: 'ready', route: r })
+      setFollowing(true)
+      setNavigating({ stationId: selected.id, route: r })
+    } catch (e) {
+      toast.error('Could not start navigation', e instanceof Error ? e.message : String(e))
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  function endNav(arrived: boolean) {
+    setNavigating(null)
+    setNavFrame(null)
+    setRouteState({ kind: 'idle' })
+    // Arrived → open the full sheet so reporting the charger is one tap away.
+    setSheet(arrived ? 'full' : 'peek')
+    if (navigating) {
+      const s = STATION_BY_ID.get(navigating.stationId)
+      if (s) setFlyTo([s.lat, s.lng])
+    }
+  }
+
   function pickVehicle(v: Vehicle | null) {
     setVehicle(v)
     saveVehicle(v)
@@ -246,7 +292,7 @@ export default function MapPage() {
     <div className="relative flex h-full flex-col md:flex-row" data-testid="map-page">
       <div className="relative min-h-0 flex-1">
         <StationMap
-          stations={visible}
+          stations={navigating && selected ? [selected] : visible}
           statusOf={statusOf}
           needsAdapter={needsAdapter}
           selectedId={selectedId}
@@ -254,8 +300,12 @@ export default function MapPage() {
           flyTo={flyTo}
           userLoc={userLoc}
           route={route}
+          nav={navigating ? navFrame : null}
+          following={following}
+          onUserPan={() => setFollowing(false)}
         />
 
+        {!navigating && (<>
         {/* Floating controls over the map */}
         <div className="pointer-events-none absolute inset-x-0 top-0 z-[1000] flex flex-col gap-2 p-3">
           {/* z-20: the results dropdown must paint above the chips row below it. */}
@@ -358,6 +408,7 @@ export default function MapPage() {
         >
           {locating ? <Loader2 className="size-5 animate-spin" /> : <LocateFixed className={cn('size-5', userLoc && 'text-[#4f9dff]')} />}
         </button>
+        </>)}
       </div>
 
       {/* Side panel (desktop) / bottom sheet (phone) */}
@@ -368,6 +419,7 @@ export default function MapPage() {
           'absolute inset-x-0 bottom-0 z-[1001] flex flex-col overflow-hidden rounded-t-2xl border-t border-border bg-card shadow-[0_-8px_30px_rgba(0,0,0,0.45)] transition-[height] duration-200',
           SHEET_HEIGHT[sheet],
           'md:static md:h-auto md:w-[380px] md:rounded-none md:border-l md:border-t-0 md:shadow-none md:transition-none',
+          navigating && '!hidden',
         )}
       >
         {/* Handle (phones only) */}
@@ -406,6 +458,8 @@ export default function MapPage() {
               userLoc={userLoc}
               routeState={routeState}
               onRoute={showRoute}
+              starting={starting}
+              onStart={startNav}
               onClose={closeStation}
               onSignIn={() => setShowAuth(true)}
             />
@@ -501,6 +555,18 @@ export default function MapPage() {
           )}
         </div>
       </aside>
+
+      {navigating && selected && (
+        <NavigationView
+          key={navigating.route.distanceM + navigating.stationId}
+          station={selected}
+          initialRoute={navigating.route}
+          following={following}
+          onRecenter={() => setFollowing(true)}
+          onFrame={setNavFrame}
+          onEnd={endNav}
+        />
+      )}
 
       <VehiclePicker open={pickerOpen} selectedId={vehicle?.id ?? null} onPick={pickVehicle} onClose={() => setPickerOpen(false)} />
       {showAuth && !isSignedIn && <AuthOverlay providers={['google', 'github']} onClose={() => setShowAuth(false)} />}

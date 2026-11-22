@@ -44,8 +44,8 @@ test('pick a Taycan, open a Supercharger, see adapter + map hand-offs + route', 
   await expect(page.getByTestId('nav-google')).toHaveAttribute('href', /google\.com\/maps\/dir\/\?api=1&destination=30\.\d+,-97\.\d+.*dir_action=navigate/)
   await expect(page.getByTestId('nav-apple')).toHaveAttribute('href', /maps\.apple\.com\/\?daddr=30\.\d+,-97\.\d+&dirflg=d/)
 
-  // In-app route preview from the faked GPS position.
-  await page.getByTestId('directions').getByRole('button', { name: 'Route' }).click()
+  // Route preview (without starting navigation) from the faked GPS position.
+  await page.getByTestId('directions').getByRole('button', { name: 'Preview' }).click()
   await expect(page.getByTestId('route-summary')).toContainText(/min/, { timeout: 15_000 })
   await expect(page.getByTestId('route-summary')).toContainText(/mi by car/)
 

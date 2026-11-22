@@ -1,0 +1,333 @@
+/**
+ * NavigationView — in-app turn-by-turn driving mode ("Start").
+ *
+ * What it does, like Google / Apple Maps:
+ *   - follows your GPS (watchPosition) and tells the map to zoom in and keep
+ *     you in view, a little below center so you see the road ahead
+ *   - big banner: next maneuver arrow, distance to it, the street
+ *   - bottom bar: arrival time, minutes and miles left, mute, End
+ *   - spoken directions (speechSynthesis) at ~½ mile, ~500 ft and at the turn
+ *   - reroutes automatically when you leave the route
+ *   - keeps the screen awake (Wake Lock API, where the browser supports it)
+ *   - on arrival, offers to report the charger's status
+ *
+ * The map itself stays in StationMap; this component only computes the
+ * "frame" (where you are, which way you face, what's left of the route) and
+ * hands it up through `onFrame`.
+ *
+ * `?sim=1` in the URL drives a simulated car along the route — handy for
+ * trying navigation from a desk (`?sim=10` = 10× speed).
+ */
+
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  ArrowUpLeft,
+  ArrowUpRight,
+  CornerUpLeft,
+  CornerUpRight,
+  Flag,
+  LocateFixed,
+  RefreshCw,
+  Undo2,
+  Volume2,
+  VolumeX,
+  X,
+} from 'lucide-react'
+import { cn } from '../lib/utils'
+import { fetchRoute, formatMiles, type LatLng, type Route } from '../lib/geo'
+import { bearing, indexRoute, instruction, navDistance, progress, spoken, type Progress } from '../lib/nav'
+import type { Station } from '../lib/stations'
+
+export type NavFrame = { pos: LatLng; heading: number | null; path: LatLng[] }
+
+type Props = {
+  station: Station
+  initialRoute: Route
+  following: boolean
+  onRecenter: () => void
+  onFrame: (f: NavFrame | null) => void
+  onEnd: (arrived: boolean) => void
+}
+
+const MUTE_KEY = 'atx-charge-check:nav-muted'
+
+export default function NavigationView({ station, initialRoute, following, onRecenter, onFrame, onEnd }: Props) {
+  const dest: LatLng = useMemo(() => [station.lat, station.lng], [station])
+  const [route, setRoute] = useState(initialRoute)
+  const idx = useMemo(() => indexRoute(route), [route])
+  const [prog, setProg] = useState<Progress | null>(null)
+  const [gpsError, setGpsError] = useState<string | null>(null)
+  const [rerouting, setRerouting] = useState(false)
+  const [muted, setMuted] = useState(() => {
+    try {
+      return localStorage.getItem(MUTE_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+
+  // Mutable navigation state that shouldn't trigger renders.
+  const st = useRef({ hint: 0, offCount: 0, lastReroute: 0, last: null as LatLng | null, heading: null as number | null, spoken: new Set<string>() })
+  const idxRef = useRef(idx)
+  idxRef.current = idx
+  const mutedRef = useRef(muted)
+  mutedRef.current = muted
+  const onFrameRef = useRef(onFrame)
+  onFrameRef.current = onFrame
+
+  function say(text: string, key: string) {
+    if (st.current.spoken.has(key)) return
+    st.current.spoken.add(key)
+    if (mutedRef.current || typeof speechSynthesis === 'undefined') return
+    speechSynthesis.cancel()
+    const u = new SpeechSynthesisUtterance(text)
+    u.lang = 'en-US'
+    speechSynthesis.speak(u)
+  }
+
+  // ── Handle one GPS fix ─────────────────────────────────────────────────
+  const handleFix = useRef<(pos: LatLng, gpsHeading: number | null, acc: number) => void>(() => {})
+  handleFix.current = (pos, gpsHeading, acc) => {
+    const s = st.current
+    const ix = idxRef.current
+    const p = progress(ix, pos, s.hint, acc)
+    s.hint = p.snap.seg
+
+    // Heading: GPS course when moving, else derived from the last two fixes.
+    if (gpsHeading != null && !Number.isNaN(gpsHeading)) s.heading = gpsHeading
+    else if (s.last && distanceApprox(s.last, pos) > 4) s.heading = bearing(s.last, pos)
+    s.last = pos
+
+    setProg(p)
+    const shown = p.snap.offM < 30 ? p.snap.point : pos
+    onFrameRef.current({ pos: shown, heading: s.heading, path: [p.snap.point, ...ix.route.coords.slice(p.snap.seg + 1)] })
+
+    // Voice prompts for the next maneuver.
+    if (p.arrived) {
+      say(instruction(ix.route.steps[ix.route.steps.length - 1]), `arrive`)
+    } else if (p.next >= 0) {
+      const step = ix.route.steps[p.next]
+      const key = `${ix.route.distanceM}:${p.next}`
+      if (!s.spoken.has(`${key}:first`)) say(p.toNextM > 150 ? spoken(step, p.toNextM) : instruction(step), `${key}:first`)
+      else if (p.toNextM < 900 && p.toNextM > 600) say(spoken(step, p.toNextM), `${key}:half`)
+      else if (p.toNextM < 220 && p.toNextM > 90) say(spoken(step, p.toNextM), `${key}:near`)
+      else if (p.toNextM <= 45) say(instruction(step), `${key}:now`)
+    }
+
+    // Reroute after two consecutive off-route fixes, at most every 12 s.
+    s.offCount = p.offRoute ? s.offCount + 1 : 0
+    if (s.offCount >= 2 && Date.now() - s.lastReroute > 12_000) {
+      s.lastReroute = Date.now()
+      s.offCount = 0
+      setRerouting(true)
+      fetchRoute(pos, dest)
+        .then((r) => {
+          s.hint = 0
+          setRoute(r)
+          say('Rerouting', `reroute-${s.lastReroute}`)
+        })
+        .catch(() => {})
+        .finally(() => setRerouting(false))
+    }
+  }
+
+  // ── GPS (real or simulated) ────────────────────────────────────────────
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.has('sim')) {
+      // Drive along the initial route at ~45 km/h, one fix per (simulated)
+      // second. `?sim=10` plays it 10× faster.
+      const speed = Math.min(50, Math.max(1, Number(params.get('sim')) || 1))
+      const pts = densify(initialRoute.coords, 12.5)
+      let i = 0
+      const t = setInterval(() => {
+        if (i >= pts.length) return clearInterval(t)
+        handleFix.current(pts[i], null, 5)
+        i++
+      }, 1000 / speed)
+      return () => clearInterval(t)
+    }
+    if (!('geolocation' in navigator)) {
+      setGpsError('Location is not available in this browser.')
+      return
+    }
+    const id = navigator.geolocation.watchPosition(
+      (p) => {
+        setGpsError(null)
+        handleFix.current([p.coords.latitude, p.coords.longitude], p.coords.heading, p.coords.accuracy)
+      },
+      (e) => setGpsError(e.code === e.PERMISSION_DENIED ? 'Location permission is off.' : 'Waiting for GPS…'),
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 20_000 },
+    )
+    return () => navigator.geolocation.clearWatch(id)
+  }, [initialRoute])
+
+  // ── Keep the screen on ─────────────────────────────────────────────────
+  useEffect(() => {
+    type WakeLock = { release: () => Promise<void> }
+    const nav = navigator as Navigator & { wakeLock?: { request: (t: 'screen') => Promise<WakeLock> } }
+    let lock: WakeLock | null = null
+    const acquire = () => nav.wakeLock?.request('screen').then((l) => (lock = l)).catch(() => {})
+    acquire()
+    const onVis = () => document.visibilityState === 'visible' && acquire()
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      lock?.release().catch(() => {})
+    }
+  }, [])
+
+  useEffect(() => () => {
+    onFrameRef.current(null)
+    if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel()
+  }, [])
+
+  function toggleMute() {
+    setMuted((m) => {
+      try {
+        localStorage.setItem(MUTE_KEY, m ? '0' : '1')
+      } catch {
+        /* ignore */
+      }
+      if (!m && typeof speechSynthesis !== 'undefined') speechSynthesis.cancel()
+      return !m
+    })
+  }
+
+  const next = prog && prog.next >= 0 ? route.steps[prog.next] : null
+  const after = prog && prog.next >= 0 && prog.next + 1 < route.steps.length ? route.steps[prog.next + 1] : null
+  const showThen = !!(after && next && next.distanceM < 250)
+  const arrival = prog ? new Date(Date.now() + prog.remainingS * 1000) : null
+
+  return (
+    <>
+      {/* Top banner — the next maneuver */}
+      <div className="pointer-events-none fixed inset-x-0 top-0 z-[1200] p-2 pt-[max(0.5rem,env(safe-area-inset-top))]" data-testid="nav-banner">
+        <div className="pointer-events-auto mx-auto max-w-xl overflow-hidden rounded-2xl bg-[#0f5d3a] text-white shadow-2xl">
+          {prog?.arrived ? (
+            <div className="flex items-center gap-3 p-4">
+              <Flag className="size-9 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-2xl font-bold leading-tight">You&apos;ve arrived</p>
+                <p className="truncate text-sm text-white/80">{station.name}</p>
+              </div>
+            </div>
+          ) : next ? (
+            <div className="flex items-center gap-3 p-4">
+              <ManeuverIcon type={next.maneuver.type} modifier={next.maneuver.modifier} className="size-11 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-3xl font-bold leading-none tabular-nums" data-testid="nav-distance">
+                  {navDistance(prog!.toNextM)}
+                </p>
+                <p className="mt-1 text-base font-medium leading-snug" data-testid="nav-instruction">
+                  {instruction(next)}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 p-4">
+              <LocateFixed className="size-8 shrink-0 animate-pulse" />
+              <p className="text-lg font-semibold">{gpsError ?? 'Getting your location…'}</p>
+            </div>
+          )}
+          {showThen && after && (
+            <div className="flex items-center gap-2 bg-black/25 px-4 py-2 text-sm">
+              <span className="text-white/70">Then</span>
+              <ManeuverIcon type={after.maneuver.type} modifier={after.maneuver.modifier} className="size-4" />
+              <span className="truncate">{instruction(after)}</span>
+            </div>
+          )}
+          {rerouting && (
+            <div className="flex items-center gap-2 bg-black/25 px-4 py-2 text-sm">
+              <RefreshCw className="size-4 animate-spin" /> Rerouting…
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Re-center after the user pans away */}
+      {!following && (
+        <button
+          onClick={onRecenter}
+          className="fixed bottom-[calc(7.5rem+env(safe-area-inset-bottom))] left-1/2 z-[1200] flex h-11 -translate-x-1/2 items-center gap-2 rounded-full bg-card px-4 text-sm font-semibold text-foreground shadow-xl"
+        >
+          <LocateFixed className="size-4 text-[#4f9dff]" /> Re-center
+        </button>
+      )}
+
+      {/* Bottom bar — ETA + controls */}
+      <div className="fixed inset-x-0 bottom-0 z-[1200] p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]" data-testid="nav-bottom">
+        <div className="mx-auto flex max-w-xl items-center gap-2 rounded-2xl border border-border bg-card p-3 shadow-2xl">
+          <button
+            onClick={toggleMute}
+            aria-label={muted ? 'Unmute voice' : 'Mute voice'}
+            className="grid size-12 shrink-0 place-items-center rounded-xl bg-secondary text-foreground"
+          >
+            {muted ? <VolumeX className="size-5" /> : <Volume2 className="size-5" />}
+          </button>
+          <div className="min-w-0 flex-1 text-center">
+            {prog && !prog.arrived ? (
+              <>
+                <p className="text-xl font-bold leading-tight text-[var(--color-ev-working)] tabular-nums" data-testid="nav-eta">
+                  {Math.max(1, Math.round(prog.remainingS / 60))} min
+                </p>
+                <p className="text-xs text-muted-foreground tabular-nums">
+                  {formatMiles(prog.remainingM)} · arrive {arrival!.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                </p>
+              </>
+            ) : prog?.arrived ? (
+              <p className="text-sm font-medium text-foreground">How is the charger?</p>
+            ) : (
+              <p className="text-sm text-muted-foreground">{formatMiles(route.distanceM)} · {Math.round(route.durationS / 60)} min</p>
+            )}
+          </div>
+          <button
+            onClick={() => onEnd(!!prog?.arrived)}
+            data-testid="nav-end"
+            className={cn(
+              'flex h-12 shrink-0 items-center gap-1.5 rounded-xl px-4 text-sm font-semibold',
+              prog?.arrived ? 'bg-primary text-primary-foreground' : 'bg-destructive text-destructive-foreground',
+            )}
+          >
+            {prog?.arrived ? 'Report' : (<><X className="size-4" /> End</>)}
+          </button>
+        </div>
+      </div>
+    </>
+  )
+}
+
+function ManeuverIcon({ type, modifier, className }: { type: string; modifier?: string; className?: string }) {
+  if (type === 'arrive') return <Flag className={className} />
+  if (type === 'roundabout' || type === 'rotary') return <RefreshCw className={className} />
+  const m = modifier ?? 'straight'
+  if (m === 'uturn') return <Undo2 className={className} />
+  if (m === 'sharp left') return <CornerUpLeft className={className} />
+  if (m === 'sharp right') return <CornerUpRight className={className} />
+  if (m === 'left') return <ArrowLeft className={className} />
+  if (m === 'right') return <ArrowRight className={className} />
+  if (m === 'slight left') return <ArrowUpLeft className={className} />
+  if (m === 'slight right') return <ArrowUpRight className={className} />
+  return <ArrowUp className={className} />
+}
+
+function distanceApprox(a: LatLng, b: LatLng) {
+  const dy = (b[0] - a[0]) * 111_320
+  const dx = (b[1] - a[1]) * 111_320 * Math.cos((a[0] * Math.PI) / 180)
+  return Math.hypot(dx, dy)
+}
+
+/** Points every `stepM` meters along a line (for the simulator). */
+function densify(coords: LatLng[], stepM: number): LatLng[] {
+  const out: LatLng[] = [coords[0]]
+  for (let i = 1; i < coords.length; i++) {
+    const a = coords[i - 1]
+    const b = coords[i]
+    const n = Math.max(1, Math.floor(distanceApprox(a, b) / stepM))
+    for (let k = 1; k <= n; k++) out.push([a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n])
+  }
+  return out
+}
