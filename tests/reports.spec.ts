@@ -18,7 +18,8 @@ const STATION = 'Austin Motel Tesla Destination'
 async function openStation(page: import('@playwright/test').Page) {
   await page.goto('/map')
   await page.getByLabel('Search stations').fill('Austin Motel')
-  await page.getByRole('button', { name: STATION }).click()
+  // .first(): the search dropdown comes before the "Latest reports" list.
+  await page.getByRole('button', { name: STATION }).first().click()
   await expect(page.getByTestId('station-panel')).toBeVisible()
 }
 
@@ -54,8 +55,13 @@ test('a report syncs live to another driver, who can confirm then dispute it', a
   await expect(bCard.getByText('Disputed')).toBeVisible()
   await expect(a.page.getByTestId('station-status')).not.toContainText('Broken')
 
-  // A re-reports "working": it replaces A's own broken report (and cleans up).
+  // A re-reports "working": it replaces A's own broken report.
   await a.page.getByTestId('report-working').click()
   await expect(aCard).toHaveCount(0, { timeout: 10_000 })
   await expect(b.page.getByTestId('station-status')).toContainText('Working', { timeout: 10_000 })
+
+  // A removes their report → gone for B too, station back to "No recent reports".
+  await a.page.getByTestId('remove-report').click()
+  await expect(b.page.getByTestId('station-status')).toContainText('No recent reports', { timeout: 10_000 })
+  await expect(a.page.getByTestId('report-list')).toHaveCount(0)
 })

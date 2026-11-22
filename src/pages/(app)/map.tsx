@@ -530,7 +530,12 @@ export default function MapPage() {
               <div>
                 <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Latest reports</h3>
                 {recent.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No live reports yet. Be the first driver to post one.</p>
+                  <p className="text-sm text-muted-foreground" data-testid="no-reports">
+                    Nobody has reported a charger in the last 3 hours, so every pin is gray. Tap a pin, then
+                    choose <span className="text-[var(--color-ev-working)]">Working</span>,{' '}
+                    <span className="text-[var(--color-ev-busy)]">Busy</span> or{' '}
+                    <span className="text-[var(--color-ev-broken)]">Broken</span> to color it for everyone.
+                  </p>
                 ) : (
                   <ul className="space-y-0.5">
                     {recent.map((r) => {

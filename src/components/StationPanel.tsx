@@ -285,6 +285,16 @@ export default function StationPanel(props: Props) {
                       <span className="min-w-0 truncate">
                         {mine ? 'You' : (getName(r.record.createdBy) ?? 'A driver')} · {timeLeft(r.expiresMs, now)}
                       </span>
+                      {mine && (
+                        <button
+                          onClick={() => reportMut.remove(r.record.recordId)}
+                          disabled={!ready}
+                          data-testid="remove-report"
+                          className="shrink-0 rounded px-1.5 py-1 text-xs font-medium text-muted-foreground underline-offset-2 hover:text-destructive hover:underline disabled:opacity-50"
+                        >
+                          Remove
+                        </button>
+                      )}
                       <div className="ml-auto flex shrink-0 items-center gap-1.5">
                         <VoteButton
                           label="Confirm"

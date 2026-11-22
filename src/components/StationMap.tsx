@@ -122,7 +122,15 @@ export default function StationMap(props: Props) {
       })
     }
 
-    map.on('load', () => {
+    // Add our layers on 'style.load' — fired once the style JSON and sprites
+    // are in — NOT on 'load', which waits for every basemap tile and left the
+    // map without pins for seconds on slow phones. (isStyleLoaded() also waits
+    // for tiles, so it can't gate this.) 'load' stays as a fallback; `setUp`
+    // runs once either way.
+    let setUpDone = false
+    const setUp = () => {
+      if (setUpDone) return
+      setUpDone = true
       // Draw our layers under the street-name labels, like the maps apps.
       const labelsFirst = map.getStyle().layers.find((l) => l.type === 'symbol')?.id
 
@@ -215,7 +223,9 @@ export default function StationMap(props: Props) {
 
       ready.current = true
       map.fire('appready')
-    })
+    }
+    map.on('style.load' as 'load', setUp)
+    map.on('load', setUp)
 
     return () => {
       ready.current = false
@@ -256,6 +266,7 @@ export default function StationMap(props: Props) {
         }
       })
       ;(m.getSource('stations') as GeoJSONSource).setData({ type: 'FeatureCollection', features })
+      m.getContainer().dataset.pins = String(features.length) // for tests
     })
   }, [stations, statusOf, needsAdapter, selectedId])
 
