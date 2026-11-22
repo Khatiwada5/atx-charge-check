@@ -6,12 +6,12 @@
  * larger pin. Clicking a pin selects the station; the parent page owns the
  * selection and shows the detail panel.
  *
- * Tiles: CARTO's dark basemap over OpenStreetMap data (free, attribution
- * required and shown bottom-right).
+ * Tiles: Esri's "World Dark Gray Canvas" basemap + its label layer — free,
+ * no API key, attribution shown bottom-right. Pins sit above both layers.
  */
 
 import { useEffect } from 'react'
-import { CircleMarker, MapContainer, TileLayer, Tooltip, useMap } from 'react-leaflet'
+import { CircleMarker, MapContainer, TileLayer, Tooltip, useMap, ZoomControl } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { Station } from '../lib/stations'
 import type { StationStatus } from '../lib/station-status'
@@ -44,12 +44,19 @@ export default function StationMap({ stations, statusOf, selectedId, onSelect, f
       preferCanvas
       className="h-full w-full"
       attributionControl
+      zoomControl={false}
     >
+      <ZoomControl position="bottomright" />
       <TileLayer
-        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-        subdomains="abcd"
+        url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+        attribution='Basemap &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors · Stations: <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
         maxZoom={19}
+        maxNativeZoom={16}
+      />
+      <TileLayer
+        url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}"
+        maxZoom={19}
+        maxNativeZoom={16}
       />
       <FlyTo target={flyTo} />
       {/* Unknown pins first so reported stations draw on top of them. */}
