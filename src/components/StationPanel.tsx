@@ -25,6 +25,7 @@ import { currentStatus, timeAgo, timeLeft, type ScoredReport, type StationStatus
 import { appleMapsUrl, distanceMeters, formatDuration, formatMiles, googleMapsUrl, type LatLng, type Route } from '../lib/geo'
 import { compat, PLUG_LABEL, plugFit, stationPlugs, type Vehicle } from '../lib/plugs'
 import { REPORT_TTL_HOURS, type Report, type ReportStatus } from '../schemas/reports-schema'
+import { delayTone, type Traffic } from '../lib/traffic'
 import type { Vote, VoteKind } from '../schemas/votes-schema'
 
 export const STATUS_LABEL: Record<StationStatus, string> = {
@@ -56,7 +57,7 @@ const STATUS_BG_CLASS: Record<ReportStatus, string> = {
 export type RouteState =
   | { kind: 'idle' }
   | { kind: 'loading' }
-  | { kind: 'ready'; route: Route }
+  | { kind: 'ready'; route: Route; traffic: Traffic | null }
   | { kind: 'error'; message: string }
 
 type Props = {
@@ -158,7 +159,7 @@ export default function StationPanel(props: Props) {
           {starting ? <Loader2 className="size-5 animate-spin" /> : <Navigation className="size-5 fill-current" />}
           {starting ? 'Starting…' : 'Start'}
           {routeState.kind === 'ready' && !starting && (
-            <span className="font-medium text-white/80">· {formatDuration(routeState.route.durationS)}</span>
+            <span className="font-medium text-white/80">· {formatDuration(routeState.traffic?.travelTimeS ?? routeState.route.durationS)}</span>
           )}
         </button>
         <div className="grid grid-cols-3 gap-2">
@@ -173,12 +174,7 @@ export default function StationPanel(props: Props) {
           <NavLink href={googleMapsUrl(dest)} label="Google Maps" testId="nav-google" />
           <NavLink href={appleMapsUrl(dest, station.name)} label="Apple Maps" testId="nav-apple" />
         </div>
-        {routeState.kind === 'ready' && (
-          <p className="mt-2 text-sm text-foreground" data-testid="route-summary">
-            <span className="font-semibold">{formatDuration(routeState.route.durationS)}</span>
-            <span className="text-muted-foreground"> · {formatMiles(routeState.route.distanceM)} by car</span>
-          </p>
-        )}
+        {routeState.kind === 'ready' && <RouteSummary route={routeState.route} traffic={routeState.traffic} />}
         {routeState.kind === 'error' && <p className="mt-2 text-xs text-destructive">{routeState.message}</p>}
       </div>
 
@@ -316,6 +312,27 @@ export default function StationPanel(props: Props) {
         </section>
       </div>
     </div>
+  )
+}
+
+export const TONE_TEXT = { ok: 'text-[var(--color-ev-working)]', slow: 'text-[var(--color-ev-busy)]', heavy: 'text-[var(--color-ev-broken)]' }
+
+/** "21 min · 11 mi by car · +4 min traffic" — or a typical-speed estimate without a key. */
+function RouteSummary({ route, traffic }: { route: Route; traffic: Traffic | null }) {
+  const time = traffic?.travelTimeS ?? route.durationS
+  const tone = traffic ? delayTone(traffic.delayS) : 'ok'
+  return (
+    <p className="mt-2 text-sm text-foreground" data-testid="route-summary">
+      <span className={cn('font-semibold', traffic && TONE_TEXT[tone])}>{formatDuration(time)}</span>
+      <span className="text-muted-foreground"> · {formatMiles(route.distanceM)} by car</span>
+      {traffic ? (
+        <span className={cn('block text-xs', TONE_TEXT[tone])} data-testid="traffic-note">
+          {traffic.delayS >= 60 ? `+${Math.round(traffic.delayS / 60)} min due to traffic` : 'Traffic is light'}
+        </span>
+      ) : (
+        <span className="block text-xs text-muted-foreground" data-testid="traffic-note">Typical travel time · live traffic unavailable</span>
+      )}
+    </p>
   )
 }
 

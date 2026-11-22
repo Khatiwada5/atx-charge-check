@@ -35,6 +35,7 @@ import { currentStatus, scoreReports, type StationStatus } from '../../lib/stati
 import { compat, hasFastFor, VEHICLE_BY_ID, type Vehicle } from '../../lib/plugs'
 import { distanceMeters, fetchRoute, formatMiles, getLocation, type LatLng, type Route } from '../../lib/geo'
 import type { Report } from '../../schemas/reports-schema'
+import { fetchTraffic, type Traffic } from '../../lib/traffic'
 import type { Vote } from '../../schemas/votes-schema'
 
 const FILTERS: StationStatus[] = ['working', 'busy', 'broken', 'unknown']
@@ -96,7 +97,7 @@ export default function MapPage() {
   const [sheet, setSheet] = useState<Sheet>('bar')
   const routeAbort = useRef<AbortController | null>(null)
   // Turn-by-turn mode.
-  const [navigating, setNavigating] = useState<{ stationId: string; route: Route } | null>(null)
+  const [navigating, setNavigating] = useState<{ stationId: string; route: Route; traffic: Traffic | null } | null>(null)
   const [navFrame, setNavFrame] = useState<NavFrame | null>(null)
   const [following, setFollowing] = useState(true)
   const [headingUp, setHeadingUp] = useState(true)
@@ -211,8 +212,9 @@ export default function MapPage() {
     const from = userLoc ?? (await locate())
     if (!from) return setRouteState({ kind: 'error', message: 'Turn on location to preview the route.' })
     try {
-      const route = await fetchRoute(from, [selected.lat, selected.lng], ctrl.signal)
-      setRouteState({ kind: 'ready', route })
+      const to: LatLng = [selected.lat, selected.lng]
+      const [route, traffic] = await Promise.all([fetchRoute(from, to, ctrl.signal), fetchTraffic(from, to, ctrl.signal)])
+      setRouteState({ kind: 'ready', route, traffic })
       setSheet('peek')
     } catch (e) {
       if (ctrl.signal.aborted) return
@@ -237,10 +239,11 @@ export default function MapPage() {
       const sim = new URLSearchParams(window.location.search).has('sim')
       const from = sim && userLoc ? userLoc : await locate()
       if (!from) return
-      const r = await fetchRoute(from, [selected.lat, selected.lng])
-      setRouteState({ kind: 'ready', route: r })
+      const to: LatLng = [selected.lat, selected.lng]
+      const [r, traffic] = await Promise.all([fetchRoute(from, to), fetchTraffic(from, to)])
+      setRouteState({ kind: 'ready', route: r, traffic })
       setFollowing(true)
-      setNavigating({ stationId: selected.id, route: r })
+      setNavigating({ stationId: selected.id, route: r, traffic })
     } catch (e) {
       toast.error('Could not start navigation', e instanceof Error ? e.message : String(e))
     } finally {
@@ -288,6 +291,7 @@ export default function MapPage() {
   }
 
   const route = routeState.kind === 'ready' ? routeState.route.coords : null
+  const previewJams = routeState.kind === 'ready' ? (routeState.traffic?.jams ?? null) : null
 
   return (
     <div className="relative flex h-full flex-col md:flex-row" data-testid="map-page">
@@ -301,6 +305,7 @@ export default function MapPage() {
           flyTo={flyTo}
           userLoc={userLoc}
           route={route}
+          jams={navigating ? (navFrame?.jams ?? null) : previewJams}
           nav={navigating ? navFrame : null}
           following={following}
           headingUp={headingUp}
@@ -563,6 +568,7 @@ export default function MapPage() {
           key={navigating.route.distanceM + navigating.stationId}
           station={selected}
           initialRoute={navigating.route}
+          initialTraffic={navigating.traffic}
           following={following}
           headingUp={headingUp}
           onToggleHeading={() => setHeadingUp((h) => !h)}

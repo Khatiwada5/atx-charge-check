@@ -32,6 +32,7 @@ import type { Station } from '../lib/stations'
 import type { StationStatus } from '../lib/station-status'
 import type { LatLng } from '../lib/geo'
 import type { NavFrame } from './NavigationView'
+import type { Jam } from '../lib/traffic'
 
 export const STATUS_COLOR: Record<StationStatus, string> = {
   working: '#34d399',
@@ -65,6 +66,8 @@ type Props = {
   flyTo: LatLng | null
   userLoc: LatLng | null
   route: LatLng[] | null
+  /** Live-traffic slowdowns to paint over the route (orange slow, red heavy, dark red closed). */
+  jams: Jam[] | null
   /** Turn-by-turn mode: follow this position, draw what's left of the route. */
   nav: NavFrame | null
   following: boolean
@@ -73,7 +76,7 @@ type Props = {
 }
 
 export default function StationMap(props: Props) {
-  const { stations, statusOf, needsAdapter, selectedId, flyTo, userLoc, route, nav, following, headingUp } = props
+  const { stations, statusOf, needsAdapter, selectedId, flyTo, userLoc, route, jams, nav, following, headingUp } = props
   const box = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MLMap | null>(null)
   const ready = useRef(false)
@@ -155,6 +158,21 @@ export default function StationMap(props: Props) {
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: { 'line-color': '#5aaeff', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 5, 14, 7, 18, 16] },
       }, labelsFirst)
+
+      map.addSource('traffic', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+      map.addLayer(
+        {
+          id: 'traffic',
+          type: 'line',
+          source: 'traffic',
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: {
+            'line-color': ['match', ['get', 'level'], 'closed', '#8b1a1a', 'heavy', '#ef4444', '#f59e0b'],
+            'line-width': ['interpolate', ['linear'], ['zoom'], 10, 5, 14, 7, 18, 16],
+          },
+        },
+        labelsFirst,
+      )
 
       map.addSource('stations', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       map.addLayer({
@@ -250,6 +268,18 @@ export default function StationMap(props: Props) {
       )
     })
   }, [line])
+
+  // ── Traffic slowdowns ──────────────────────────────────────────────────
+  useEffect(() => {
+    whenReady((m) => {
+      ;(m.getSource('traffic') as GeoJSONSource).setData({
+        type: 'FeatureCollection',
+        features: (jams ?? [])
+          .filter((j) => j.coords.length > 1)
+          .map((j) => ({ type: 'Feature' as const, properties: { level: j.level }, geometry: { type: 'LineString' as const, coordinates: j.coords.map(ll) } })),
+      })
+    })
+  }, [jams])
 
   // ── Browsing camera ────────────────────────────────────────────────────
   useEffect(() => {

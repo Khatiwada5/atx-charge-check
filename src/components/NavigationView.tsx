@@ -10,6 +10,9 @@
  *     with lane advice; voice modes like the maps apps: All / Alerts only / Off
  *   - lane guidance: the lanes at the next turn, the ones to use lit up
  *   - compass button: heading-up (map turns with you) or north-up
+ *   - live traffic (TomTom, via our worker): traffic-aware time left and
+ *     arrival, delay shown in the bottom bar, slowdowns drawn on the route;
+ *     refreshed every 2 minutes and after each reroute
  *   - reroutes automatically when you leave the route
  *   - keeps the screen awake (Wake Lock API, where the browser supports it)
  *   - on arrival, offers to report the charger's status
@@ -46,12 +49,17 @@ import { fetchRoute, formatMiles, type LatLng, type Route } from '../lib/geo'
 import { bearing, indexRoute, instruction, laneAdvice, navDistance, progress, spokenWithLanes, type Progress } from '../lib/nav'
 import type { Lane } from '../lib/geo'
 import type { Station } from '../lib/stations'
+import { delayTone, fetchTraffic, type Jam, type Traffic } from '../lib/traffic'
 
-export type NavFrame = { pos: LatLng; heading: number | null; path: LatLng[] }
+export type NavFrame = { pos: LatLng; heading: number | null; path: LatLng[]; jams: Jam[] | null }
+
+const TRAFFIC_REFRESH_MS = 120_000
+const TONE_TEXT = { ok: 'text-[var(--color-ev-working)]', slow: 'text-[var(--color-ev-busy)]', heavy: 'text-[var(--color-ev-broken)]' }
 
 type Props = {
   station: Station
   initialRoute: Route
+  initialTraffic: Traffic | null
   following: boolean
   headingUp: boolean
   onToggleHeading: () => void
@@ -66,7 +74,7 @@ const VOICE_KEY = 'atx-charge-check:nav-voice'
 const VOICE_LABEL: Record<Voice, string> = { all: 'Voice on', alerts: 'Alerts only', off: 'Voice off' }
 const NEXT_VOICE: Record<Voice, Voice> = { all: 'alerts', alerts: 'off', off: 'all' }
 
-export default function NavigationView({ station, initialRoute, following, headingUp, onToggleHeading, onRecenter, onFrame, onEnd }: Props) {
+export default function NavigationView({ station, initialRoute, initialTraffic, following, headingUp, onToggleHeading, onRecenter, onFrame, onEnd }: Props) {
   const dest: LatLng = useMemo(() => [station.lat, station.lng], [station])
   const [route, setRoute] = useState(initialRoute)
   const idx = useMemo(() => indexRoute(route), [route])
@@ -82,6 +90,13 @@ export default function NavigationView({ station, initialRoute, following, headi
     }
   })
   const [voiceToast, setVoiceToast] = useState<string | null>(null)
+  // Traffic, plus OSRM's typical-speed estimate for the same stretch when it
+  // was fetched: their ratio scales the live "time left" between refreshes.
+  const [traffic, setTraffic] = useState<{ t: Traffic; osrmS: number } | null>(
+    initialTraffic ? { t: initialTraffic, osrmS: initialRoute.durationS } : null,
+  )
+  const trafficRef = useRef(traffic)
+  trafficRef.current = traffic
 
   // Mutable navigation state that shouldn't trigger renders.
   // Heading starts as the route's first direction so the intro camera already faces the road.
@@ -94,6 +109,7 @@ export default function NavigationView({ station, initialRoute, following, headi
     spoken: new Set<string>(),
     started: false,
   })
+  const lastProg = useRef<Progress | null>(null)
   const idxRef = useRef(idx)
   idxRef.current = idx
   const voiceRef = useRef(voice)
@@ -128,7 +144,13 @@ export default function NavigationView({ station, initialRoute, following, headi
 
     setProg(p)
     const shown = p.snap.offM < 30 ? p.snap.point : pos
-    onFrameRef.current({ pos: shown, heading: s.heading, path: [p.snap.point, ...ix.route.coords.slice(p.snap.seg + 1)] })
+    onFrameRef.current({
+      pos: shown,
+      heading: s.heading,
+      path: [p.snap.point, ...ix.route.coords.slice(p.snap.seg + 1)],
+      jams: trafficRef.current?.t.jams ?? null,
+    })
+    lastProg.current = p
 
     // Voice prompts for the next maneuver.
     if (p.arrived) {
@@ -153,10 +175,11 @@ export default function NavigationView({ station, initialRoute, following, headi
       s.lastReroute = Date.now()
       s.offCount = 0
       setRerouting(true)
-      fetchRoute(pos, dest)
-        .then((r) => {
+      Promise.all([fetchRoute(pos, dest), fetchTraffic(pos, dest)])
+        .then(([r, t]) => {
           s.hint = 0
           setRoute(r)
+          setTraffic(t ? { t, osrmS: r.durationS } : null)
           say('Rerouting', `reroute-${s.lastReroute}`, true)
         })
         .catch(() => {})
@@ -194,6 +217,18 @@ export default function NavigationView({ station, initialRoute, following, headi
     )
     return () => navigator.geolocation.clearWatch(id)
   }, [initialRoute])
+
+  // ── Refresh traffic every 2 minutes from where you are now ─────────────
+  useEffect(() => {
+    const t = setInterval(async () => {
+      const pos = st.current.last
+      const p = lastProg.current
+      if (!pos || !p || p.arrived) return
+      const fresh = await fetchTraffic(pos, dest)
+      if (fresh) setTraffic({ t: fresh, osrmS: p.remainingS })
+    }, TRAFFIC_REFRESH_MS)
+    return () => clearInterval(t)
+  }, [dest])
 
   // ── Keep the screen on ─────────────────────────────────────────────────
   useEffect(() => {
@@ -233,7 +268,11 @@ export default function NavigationView({ station, initialRoute, following, headi
   const next = prog && prog.next >= 0 ? route.steps[prog.next] : null
   const after = prog && prog.next >= 0 && prog.next + 1 < route.steps.length ? route.steps[prog.next + 1] : null
   const showThen = !!(after && next && next.distanceM < 250)
-  const arrival = prog ? new Date(Date.now() + prog.remainingS * 1000) : null
+  // Time left = OSRM's remaining estimate × (traffic time ÷ OSRM time when traffic was fetched).
+  const factor = traffic && traffic.osrmS > 0 ? Math.min(3, Math.max(0.7, traffic.t.travelTimeS / traffic.osrmS)) : 1
+  const remainingS = prog ? prog.remainingS * factor : 0
+  const tone = traffic ? delayTone(traffic.t.delayS) : 'ok'
+  const arrival = prog ? new Date(Date.now() + remainingS * 1000) : null
 
   return (
     <>
@@ -326,11 +365,18 @@ export default function NavigationView({ station, initialRoute, following, headi
           <div className="min-w-0 flex-1 text-center">
             {prog && !prog.arrived ? (
               <>
-                <p className="text-xl font-bold leading-tight text-[var(--color-ev-working)] tabular-nums" data-testid="nav-eta">
-                  {Math.max(1, Math.round(prog.remainingS / 60))} min
+                <p className={cn('text-xl font-bold leading-tight tabular-nums', TONE_TEXT[tone])} data-testid="nav-eta" data-tone={tone}>
+                  {Math.max(1, Math.round(remainingS / 60))} min
                 </p>
                 <p className="text-xs text-muted-foreground tabular-nums">
                   {formatMiles(prog.remainingM)} · arrive {arrival!.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                </p>
+                <p className={cn('text-[11px] leading-tight', traffic ? TONE_TEXT[tone] : 'text-muted-foreground')} data-testid="nav-traffic">
+                  {traffic
+                    ? traffic.t.delayS >= 60
+                      ? `+${Math.round(traffic.t.delayS / 60)} min traffic`
+                      : 'Light traffic'
+                    : 'Typical traffic'}
                 </p>
               </>
             ) : prog?.arrived ? (

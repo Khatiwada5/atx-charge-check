@@ -77,7 +77,15 @@ export async function fetchRoute(from: LatLng, to: LatLng, signal?: AbortSignal)
   const url =
     `https://router.project-osrm.org/route/v1/driving/${from[1]},${from[0]};${to[1]},${to[0]}` +
     `?overview=full&geometries=geojson&steps=true`
-  const res = await fetch(url, { signal })
+  // The free demo router occasionally stalls; give up after 12 s with a clear message.
+  const timeout = AbortSignal.timeout(12_000)
+  let res: Response
+  try {
+    res = await fetch(url, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout })
+  } catch (e) {
+    if (timeout.aborted && !signal?.aborted) throw new Error('The routing service is not responding. Try again, or use Google / Apple Maps.')
+    throw e
+  }
   if (!res.ok) throw new Error(`Routing service answered ${res.status}`)
   const body = (await res.json()) as {
     code: string

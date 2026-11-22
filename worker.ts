@@ -33,6 +33,7 @@ import {
   resolveAuth,
 } from './src/server/http-routes.js'
 import { registerRealtimeRoutes } from './src/server/realtime-routes.js'
+import { registerTrafficRoutes } from './src/server/traffic-routes.js'
 
 // Dynamic deploy reads this manifest to create the app's DO bindings.
 export const __DO_MANIFEST__ = [
@@ -118,6 +119,8 @@ export interface Env extends DOBindings<typeof __DO_MANIFEST__> {
    * an authenticated app owner/admin. deepspace dev/test set it locally.
    */
   ALLOW_DEBUG_ROUTES?: string
+  /** TomTom Routing API key for live traffic (optional; see src/server/traffic-routes.ts). */
+  TOMTOM_API_KEY?: string
 }
 
 export type AppContext = { Bindings: Env }
@@ -143,6 +146,7 @@ registerAgent(app, {
   tools: buildTools,
   inApp: schemas.some((schema) => schema.name === AI_CHATS_SCHEMA.name),
 })
+registerTrafficRoutes(app)
 registerPlatformProxyRoutes(app)
 registerStaticRoutes(app)
 
