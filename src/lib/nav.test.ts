@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bearing, indexRoute, instruction, navDistance, progress, spoken } from './nav'
+import { bearing, indexRoute, instruction, laneAdvice, navDistance, progress, spoken, spokenWithLanes } from './nav'
 import type { LatLng, Route, Step } from './geo'
 
 // An L-shaped route: ~1 km north, then ~1 km east.
@@ -81,5 +81,27 @@ describe('instructions', () => {
   it('computes compass bearings', () => {
     expect(Math.round(bearing(A, B))).toBe(0)
     expect(Math.round(bearing(B, C))).toBe(90)
+  })
+})
+
+describe('lane guidance', () => {
+  const base = route.steps[1]
+  const withLanes = (valid: boolean[]) => ({ ...base, lanes: valid.map((v) => ({ indications: ['none'], valid: v })) })
+
+  it('names the lane to use', () => {
+    expect(laneAdvice(withLanes([false, false, true]))).toBe('Use the right lane')
+    expect(laneAdvice(withLanes([true, true, false, false]))).toBe('Use the left 2 lanes')
+    expect(laneAdvice(withLanes([false, true, false]))).toBe('Use the middle lane')
+  })
+
+  it('stays quiet when every lane works or lanes are unknown', () => {
+    expect(laneAdvice(withLanes([true, true]))).toBeNull()
+    expect(laneAdvice(base)).toBeNull()
+  })
+
+  it('folds lane advice into the spoken prompt', () => {
+    expect(spokenWithLanes(withLanes([false, false, true]), 152)).toBe(
+      'In 500 feet, use the right lane to turn right onto West 6th Street',
+    )
   })
 })

@@ -6,7 +6,10 @@
  *     you in view, a little below center so you see the road ahead
  *   - big banner: next maneuver arrow, distance to it, the street
  *   - bottom bar: arrival time, minutes and miles left, mute, End
- *   - spoken directions (speechSynthesis) at ~½ mile, ~500 ft and at the turn
+ *   - spoken directions (speechSynthesis) at ~½ mile, ~500 ft and at the turn,
+ *     with lane advice; voice modes like the maps apps: All / Alerts only / Off
+ *   - lane guidance: the lanes at the next turn, the ones to use lit up
+ *   - compass button: heading-up (map turns with you) or north-up
  *   - reroutes automatically when you leave the route
  *   - keeps the screen awake (Wake Lock API, where the browser supports it)
  *   - on arrival, offers to report the charger's status
@@ -22,6 +25,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
+  BellRing,
+  Compass,
   ArrowRight,
   ArrowUp,
   ArrowUpLeft,
@@ -38,7 +43,8 @@ import {
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { fetchRoute, formatMiles, type LatLng, type Route } from '../lib/geo'
-import { bearing, indexRoute, instruction, navDistance, progress, spoken, type Progress } from '../lib/nav'
+import { bearing, indexRoute, instruction, laneAdvice, navDistance, progress, spokenWithLanes, type Progress } from '../lib/nav'
+import type { Lane } from '../lib/geo'
 import type { Station } from '../lib/stations'
 
 export type NavFrame = { pos: LatLng; heading: number | null; path: LatLng[] }
@@ -47,41 +53,60 @@ type Props = {
   station: Station
   initialRoute: Route
   following: boolean
+  headingUp: boolean
+  onToggleHeading: () => void
   onRecenter: () => void
   onFrame: (f: NavFrame | null) => void
   onEnd: (arrived: boolean) => void
 }
 
-const MUTE_KEY = 'atx-charge-check:nav-muted'
+/** Voice modes, as in Google / Apple Maps. "alerts" = only the turn-now cues. */
+type Voice = 'all' | 'alerts' | 'off'
+const VOICE_KEY = 'atx-charge-check:nav-voice'
+const VOICE_LABEL: Record<Voice, string> = { all: 'Voice on', alerts: 'Alerts only', off: 'Voice off' }
+const NEXT_VOICE: Record<Voice, Voice> = { all: 'alerts', alerts: 'off', off: 'all' }
 
-export default function NavigationView({ station, initialRoute, following, onRecenter, onFrame, onEnd }: Props) {
+export default function NavigationView({ station, initialRoute, following, headingUp, onToggleHeading, onRecenter, onFrame, onEnd }: Props) {
   const dest: LatLng = useMemo(() => [station.lat, station.lng], [station])
   const [route, setRoute] = useState(initialRoute)
   const idx = useMemo(() => indexRoute(route), [route])
   const [prog, setProg] = useState<Progress | null>(null)
   const [gpsError, setGpsError] = useState<string | null>(null)
   const [rerouting, setRerouting] = useState(false)
-  const [muted, setMuted] = useState(() => {
+  const [voice, setVoice] = useState<Voice>(() => {
     try {
-      return localStorage.getItem(MUTE_KEY) === '1'
+      const v = localStorage.getItem(VOICE_KEY)
+      return v === 'alerts' || v === 'off' ? v : 'all'
     } catch {
-      return false
+      return 'all'
     }
   })
+  const [voiceToast, setVoiceToast] = useState<string | null>(null)
 
   // Mutable navigation state that shouldn't trigger renders.
-  const st = useRef({ hint: 0, offCount: 0, lastReroute: 0, last: null as LatLng | null, heading: null as number | null, spoken: new Set<string>() })
+  // Heading starts as the route's first direction so the intro camera already faces the road.
+  const st = useRef({
+    hint: 0,
+    offCount: 0,
+    lastReroute: 0,
+    last: null as LatLng | null,
+    heading: (initialRoute.steps[0]?.maneuver.bearingAfter ?? null) as number | null,
+    spoken: new Set<string>(),
+    started: false,
+  })
   const idxRef = useRef(idx)
   idxRef.current = idx
-  const mutedRef = useRef(muted)
-  mutedRef.current = muted
+  const voiceRef = useRef(voice)
+  voiceRef.current = voice
   const onFrameRef = useRef(onFrame)
   onFrameRef.current = onFrame
 
-  function say(text: string, key: string) {
+  /** `alert` cues (turn now, reroute, arrival) still play in "Alerts only". */
+  function say(text: string, key: string, alert = false) {
     if (st.current.spoken.has(key)) return
     st.current.spoken.add(key)
-    if (mutedRef.current || typeof speechSynthesis === 'undefined') return
+    const v = voiceRef.current
+    if (v === 'off' || (v === 'alerts' && !alert) || typeof speechSynthesis === 'undefined') return
     speechSynthesis.cancel()
     const u = new SpeechSynthesisUtterance(text)
     u.lang = 'en-US'
@@ -107,14 +132,19 @@ export default function NavigationView({ station, initialRoute, following, onRec
 
     // Voice prompts for the next maneuver.
     if (p.arrived) {
-      say(instruction(ix.route.steps[ix.route.steps.length - 1]), `arrive`)
+      say(`${instruction(ix.route.steps[ix.route.steps.length - 1])}. ${station.name}.`, `arrive`, true)
     } else if (p.next >= 0) {
       const step = ix.route.steps[p.next]
       const key = `${ix.route.distanceM}:${p.next}`
-      if (!s.spoken.has(`${key}:first`)) say(p.toNextM > 150 ? spoken(step, p.toNextM) : instruction(step), `${key}:first`)
-      else if (p.toNextM < 900 && p.toNextM > 600) say(spoken(step, p.toNextM), `${key}:half`)
-      else if (p.toNextM < 220 && p.toNextM > 90) say(spoken(step, p.toNextM), `${key}:near`)
-      else if (p.toNextM <= 45) say(instruction(step), `${key}:now`)
+      if (!s.started) {
+        s.started = true
+        const first = instruction(ix.route.steps[0])
+        say(`Starting route to ${station.name}. ${first}.`, 'start')
+        s.spoken.add(`${key}:first`)
+      } else if (!s.spoken.has(`${key}:first`)) say(p.toNextM > 150 ? spokenWithLanes(step, p.toNextM) : instruction(step), `${key}:first`)
+      else if (p.toNextM < 900 && p.toNextM > 600) say(spokenWithLanes(step, p.toNextM), `${key}:half`)
+      else if (p.toNextM < 220 && p.toNextM > 90) say(spokenWithLanes(step, p.toNextM), `${key}:near`)
+      else if (p.toNextM <= 45) say(instruction(step), `${key}:now`, true)
     }
 
     // Reroute after two consecutive off-route fixes, at most every 12 s.
@@ -127,7 +157,7 @@ export default function NavigationView({ station, initialRoute, following, onRec
         .then((r) => {
           s.hint = 0
           setRoute(r)
-          say('Rerouting', `reroute-${s.lastReroute}`)
+          say('Rerouting', `reroute-${s.lastReroute}`, true)
         })
         .catch(() => {})
         .finally(() => setRerouting(false))
@@ -185,16 +215,19 @@ export default function NavigationView({ station, initialRoute, following, onRec
     if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel()
   }, [])
 
-  function toggleMute() {
-    setMuted((m) => {
-      try {
-        localStorage.setItem(MUTE_KEY, m ? '0' : '1')
-      } catch {
-        /* ignore */
-      }
-      if (!m && typeof speechSynthesis !== 'undefined') speechSynthesis.cancel()
-      return !m
-    })
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  function cycleVoice() {
+    const nextV = NEXT_VOICE[voice]
+    setVoice(nextV)
+    try {
+      localStorage.setItem(VOICE_KEY, nextV)
+    } catch {
+      /* ignore */
+    }
+    if (nextV !== 'all' && typeof speechSynthesis !== 'undefined') speechSynthesis.cancel()
+    setVoiceToast(VOICE_LABEL[nextV])
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setVoiceToast(null), 1800)
   }
 
   const next = prog && prog.next >= 0 ? route.steps[prog.next] : null
@@ -233,6 +266,9 @@ export default function NavigationView({ station, initialRoute, following, onRec
               <p className="text-lg font-semibold">{gpsError ?? 'Getting your location…'}</p>
             </div>
           )}
+          {next && !prog?.arrived && next.lanes && laneAdvice(next) && prog!.toNextM < 1500 && (
+            <LaneStrip lanes={next.lanes} />
+          )}
           {showThen && after && (
             <div className="flex items-center gap-2 bg-black/25 px-4 py-2 text-sm">
               <span className="text-white/70">Then</span>
@@ -248,6 +284,23 @@ export default function NavigationView({ station, initialRoute, following, onRec
         </div>
       </div>
 
+      {/* Compass: heading-up ⇄ north-up (right edge, under the banner) */}
+      <button
+        onClick={onToggleHeading}
+        aria-label={headingUp ? 'Switch to north up' : 'Switch to heading up'}
+        data-testid="nav-compass"
+        className="fixed right-3 top-[calc(9.5rem+env(safe-area-inset-top))] z-[1200] grid size-12 place-items-center rounded-full border border-border bg-card/95 text-foreground shadow-xl backdrop-blur"
+      >
+        <Compass className={cn('size-6', headingUp ? 'text-[#4f9dff]' : 'text-foreground')} />
+        <span className="absolute -bottom-5 text-[10px] font-semibold text-white [text-shadow:0_1px_2px_#000]">{headingUp ? 'Heading' : 'North'}</span>
+      </button>
+
+      {voiceToast && (
+        <div className="fixed left-1/2 top-1/2 z-[1250] -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-black/80 px-5 py-3 text-base font-semibold text-white" data-testid="voice-toast">
+          {voiceToast}
+        </div>
+      )}
+
       {/* Re-center after the user pans away */}
       {!following && (
         <button
@@ -262,11 +315,13 @@ export default function NavigationView({ station, initialRoute, following, onRec
       <div className="fixed inset-x-0 bottom-0 z-[1200] p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]" data-testid="nav-bottom">
         <div className="mx-auto flex max-w-xl items-center gap-2 rounded-2xl border border-border bg-card p-3 shadow-2xl">
           <button
-            onClick={toggleMute}
-            aria-label={muted ? 'Unmute voice' : 'Mute voice'}
+            onClick={cycleVoice}
+            aria-label={`Voice: ${VOICE_LABEL[voice]}. Tap to change.`}
+            data-testid="nav-voice"
+            data-voice={voice}
             className="grid size-12 shrink-0 place-items-center rounded-xl bg-secondary text-foreground"
           >
-            {muted ? <VolumeX className="size-5" /> : <Volume2 className="size-5" />}
+            {voice === 'all' ? <Volume2 className="size-5" /> : voice === 'alerts' ? <BellRing className="size-5" /> : <VolumeX className="size-5" />}
           </button>
           <div className="min-w-0 flex-1 text-center">
             {prog && !prog.arrived ? (
@@ -297,6 +352,53 @@ export default function NavigationView({ station, initialRoute, following, onRec
         </div>
       </div>
     </>
+  )
+}
+
+/** The lanes at the next turn, left → right; the ones to use are lit. */
+function LaneStrip({ lanes }: { lanes: Lane[] }) {
+  return (
+    <div className="flex items-center justify-center gap-1 bg-black/30 px-3 py-2" data-testid="nav-lanes" aria-label="Lane guidance">
+      {lanes.map((l, i) => (
+        <div
+          key={i}
+          data-valid={l.valid}
+          className={cn('grid h-9 w-8 place-items-center rounded-md border', l.valid ? 'border-white/80 bg-white text-[#0f5d3a]' : 'border-white/20 text-white/35')}
+        >
+          <LaneArrow indication={pickIndication(l)} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function pickIndication(l: Lane): string {
+  const ind = l.indications.filter((x) => x !== 'none')
+  return ind[0] ?? 'straight'
+}
+
+const LANE_ANGLE: Record<string, number> = {
+  straight: 0,
+  'slight right': 40,
+  right: 90,
+  'sharp right': 135,
+  'slight left': -40,
+  left: -90,
+  'sharp left': -135,
+}
+
+function LaneArrow({ indication }: { indication: string }) {
+  if (indication === 'uturn') return <Undo2 className="size-5" />
+  const a = LANE_ANGLE[indication] ?? 0
+  // Stem up from the bottom, head bent toward the lane's direction.
+  return (
+    <svg width="20" height="22" viewBox="0 0 20 22" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 21 V12" />
+      <g transform={`rotate(${a} 10 12)`}>
+        <path d="M10 12 V3" />
+        <path d="M5.5 7.5 L10 3 L14.5 7.5" />
+      </g>
+    </svg>
   )
 }
 

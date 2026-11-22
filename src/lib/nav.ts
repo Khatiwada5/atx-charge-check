@@ -183,3 +183,33 @@ export function spoken(step: Step, distM: number | null): string {
   const d = navDistance(distM).replace(' ft', ' feet').replace(' mi', ' miles')
   return `In ${d}, ${text.charAt(0).toLowerCase()}${text.slice(1)}`
 }
+
+/**
+ * Lane advice for a maneuver, e.g. "Use the right lane", "Use the left 2
+ * lanes". Null when lanes aren't mapped or every lane works (nothing to say).
+ */
+export function laneAdvice(step: Step): string | null {
+  const lanes = step.lanes
+  if (!lanes || lanes.length < 2) return null
+  const ok = lanes.map((l, i) => (l.valid ? i : -1)).filter((i) => i >= 0)
+  if (ok.length === 0 || ok.length === lanes.length) return null
+  const n = ok.length
+  const contiguous = ok[n - 1] - ok[0] === n - 1
+  if (!contiguous) return null
+  const word = n === 1 ? 'lane' : `${n} lanes`
+  if (ok[0] === 0) return n === 1 ? 'Use the left lane' : `Use the left ${word}`
+  if (ok[n - 1] === lanes.length - 1) return n === 1 ? 'Use the right lane' : `Use the right ${word}`
+  return n === 1 ? 'Use the middle lane' : `Use the middle ${word}`
+}
+
+/** Spoken form with lane advice: "In 500 feet, use the right lane to turn right onto …". */
+export function spokenWithLanes(step: Step, distM: number | null): string {
+  const lane = laneAdvice(step)
+  const base = spoken(step, distM)
+  if (!lane) return base
+  const text = instruction(step)
+  const action = `${lane.toLowerCase()} to ${text.charAt(0).toLowerCase()}${text.slice(1)}`
+  if (distM == null) return action.charAt(0).toUpperCase() + action.slice(1)
+  const d = navDistance(distM).replace(' ft', ' feet').replace(' mi', ' miles')
+  return `In ${d}, ${action}`
+}

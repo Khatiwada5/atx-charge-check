@@ -26,14 +26,10 @@ async function openStation(page: Page) {
   await expect(page.getByTestId('station-panel')).toBeVisible()
 }
 
-/** Current map zoom, read from the basemap tile URLs (…/tile/{z}/{y}/{x}). */
-async function mapZoom(page: Page) {
-  return page.evaluate(() => {
-    const imgs = [...document.querySelectorAll('.leaflet-tile-container img.leaflet-tile-loaded')] as HTMLImageElement[]
-    const img = imgs[imgs.length - 1]
-    const m = img?.src.match(/tile\/(\d+)\//)
-    return m ? Number(m[1]) : 0
-  })
+/** Camera state mirrored by StationMap onto the map container. */
+async function camera(page: Page) {
+  const d = await page.getByTestId('map').evaluate((el) => ({ ...(el as HTMLElement).dataset }))
+  return { zoom: Number(d.zoom ?? 0), bearing: Number(d.bearing ?? 0), pitch: Number(d.pitch ?? 0) }
 }
 
 test('Start navigates turn by turn, reroutes, and arrives', async ({ page, context }) => {
@@ -46,7 +42,9 @@ test('Start navigates turn by turn, reroutes, and arrives', async ({ page, conte
   await expect(page.getByTestId('nav-distance')).toHaveText(/\d+(\.\d)? (ft|mi)/)
   await expect(page.getByTestId('nav-eta')).toHaveText(/\d+ min/)
   await expect(page.getByTestId('sheet')).toBeHidden() // full-screen map while driving
-  await expect.poll(() => mapZoom(page), { timeout: 10_000 }).toBeGreaterThanOrEqual(16)
+  // Cinematic start: street level, tilted 3D view.
+  await expect.poll(async () => (await camera(page)).zoom, { timeout: 10_000 }).toBeGreaterThanOrEqual(17)
+  await expect.poll(async () => (await camera(page)).pitch).toBeGreaterThan(50)
 
   // Drive ~400 m off the route (twice — one bad fix isn't enough) → reroute.
   const before = await page.getByTestId('nav-instruction').textContent()
@@ -75,4 +73,42 @@ test('simulated drive (?sim) plays the whole route to arrival', async ({ page })
   await page.getByTestId('nav-start').click()
   await expect(page.getByTestId('nav-instruction')).toBeVisible({ timeout: 15_000 })
   await expect(page.getByTestId('nav-banner').getByText("You've arrived")).toBeVisible({ timeout: 60_000 })
+})
+
+test('3D heading-up view, compass toggle, voice modes and lane guidance', async ({ page }) => {
+  await page.goto('/map')
+  // Downtown → The Domain: the first turn (left onto W 6th St) has mapped lanes.
+  await page.getByLabel('Search stations').fill('Domain Tesla')
+  await page.getByRole('button', { name: 'The Domain Tesla Supercharger', exact: true }).click()
+  await page.getByTestId('nav-start').click()
+  await expect(page.getByTestId('nav-instruction')).toBeVisible({ timeout: 15_000 })
+
+  // Heading-up: the map turns so the road ahead is up (bearing ≠ 0 here).
+  await expect.poll(async () => Math.abs((await camera(page)).bearing), { timeout: 8_000 }).toBeGreaterThan(5)
+  await page.getByTestId('nav-compass').click() // → north up
+  await expect.poll(async () => Math.abs((await camera(page)).bearing), { timeout: 5_000 }).toBeLessThan(1)
+  await page.getByTestId('nav-compass').click() // → heading up again
+  await expect.poll(async () => Math.abs((await camera(page)).bearing), { timeout: 5_000 }).toBeGreaterThan(5)
+
+  // Lane guidance for the left turn: some lanes lit, some not.
+  const lanes = page.getByTestId('nav-lanes').locator('[data-valid]')
+  await expect(lanes.first()).toBeVisible()
+  expect(await page.getByTestId('nav-lanes').locator('[data-valid="true"]').count()).toBeGreaterThan(0)
+  expect(await page.getByTestId('nav-lanes').locator('[data-valid="false"]').count()).toBeGreaterThan(0)
+
+  // Voice: All → Alerts only → Off → All, with an on-screen label each time.
+  const v = page.getByTestId('nav-voice')
+  await expect(v).toHaveAttribute('data-voice', 'all')
+  await v.click()
+  await expect(v).toHaveAttribute('data-voice', 'alerts')
+  await expect(page.getByTestId('voice-toast')).toHaveText('Alerts only')
+  await v.click()
+  await expect(v).toHaveAttribute('data-voice', 'off')
+  await expect(page.getByTestId('voice-toast')).toHaveText('Voice off')
+  await v.click()
+  await expect(v).toHaveAttribute('data-voice', 'all')
+
+  // End: camera flattens back to a north-up map.
+  await page.getByTestId('nav-end').click()
+  await expect.poll(async () => (await camera(page)).pitch, { timeout: 5_000 }).toBeLessThan(1)
 })

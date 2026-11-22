@@ -99,6 +99,7 @@ export default function MapPage() {
   const [navigating, setNavigating] = useState<{ stationId: string; route: Route } | null>(null)
   const [navFrame, setNavFrame] = useState<NavFrame | null>(null)
   const [following, setFollowing] = useState(true)
+  const [headingUp, setHeadingUp] = useState(true)
   const [starting, setStarting] = useState(false)
 
   // ── Status ───────────────────────────────────────────────────────────────
@@ -302,6 +303,7 @@ export default function MapPage() {
           route={route}
           nav={navigating ? navFrame : null}
           following={following}
+          headingUp={headingUp}
           onUserPan={() => setFollowing(false)}
         />
 
@@ -562,6 +564,8 @@ export default function MapPage() {
           station={selected}
           initialRoute={navigating.route}
           following={following}
+          headingUp={headingUp}
+          onToggleHeading={() => setHeadingUp((h) => !h)}
           onRecenter={() => setFollowing(true)}
           onFrame={setNavFrame}
           onEnd={endNav}

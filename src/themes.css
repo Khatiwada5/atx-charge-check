@@ -84,23 +84,34 @@
   --color-ev-unknown: #6b7280;
 }
 
-/* Leaflet controls, restyled to match the theme. */
-.leaflet-container { background: #0d0f11; font: inherit; }
-.leaflet-control-zoom a {
+/* MapLibre controls, restyled to match the theme. */
+.maplibregl-map { background: #0d0f11; font: inherit; }
+.maplibregl-ctrl-group {
   background: var(--color-card) !important;
-  color: var(--color-foreground) !important;
-  border-color: var(--color-border) !important;
+  border: 1px solid var(--color-border);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4) !important;
 }
-.leaflet-control-attribution {
+.maplibregl-ctrl-group button + button { border-top-color: var(--color-border) !important; }
+.maplibregl-ctrl-group button .maplibregl-ctrl-icon { filter: invert(1) brightness(1.6); }
+.maplibregl-ctrl-attrib {
   background: rgba(16, 18, 20, 0.75) !important;
   color: var(--color-muted-foreground) !important;
 }
-.leaflet-control-attribution a { color: var(--color-muted-foreground) !important; }
+.maplibregl-ctrl-attrib a { color: var(--color-muted-foreground) !important; }
+.maplibregl-ctrl-attrib-button { filter: invert(1); }
+.station-tip .maplibregl-popup-content {
+  background: var(--color-popover);
+  color: var(--color-popover-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.station-tip .maplibregl-popup-tip { display: none; }
 
-/* Phones: the bottom sheet covers the map's bottom edge. Pinch-to-zoom
- * replaces the +/- buttons, and the attribution is lifted above the sheet. */
+/* Phones: the bottom sheet covers the map's bottom edge. Pinch/twist
+ * replaces the zoom + compass buttons; the attribution sits above the sheet. */
 @media (max-width: 767px) {
-  .leaflet-control-zoom { display: none; }
-  .leaflet-bottom { margin-bottom: 72px; }
-  .leaflet-control-attribution { font-size: 9px; max-width: 70vw; }
+  .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group { display: none; }
+  .maplibregl-ctrl-bottom-right, .maplibregl-ctrl-bottom-left { margin-bottom: 72px; }
 }

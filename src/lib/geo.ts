@@ -52,8 +52,15 @@ export type Maneuver = {
   location: LatLng
 }
 
-/** One turn-by-turn step: do `maneuver` at its location, then drive `distanceM` along `name`. */
-export type Step = { name: string; ref?: string; distanceM: number; durationS: number; maneuver: Maneuver }
+/** One lane at the maneuver: its painted arrows, and whether it leads where we're going. */
+export type Lane = { indications: string[]; valid: boolean }
+
+/**
+ * One turn-by-turn step: do `maneuver` at its location, then drive
+ * `distanceM` along `name`. `lanes` (left → right) comes from OpenStreetMap
+ * turn:lanes tags and is missing where nobody has mapped them.
+ */
+export type Step = { name: string; ref?: string; distanceM: number; durationS: number; maneuver: Maneuver; lanes?: Lane[] }
 
 export type Route = { coords: LatLng[]; distanceM: number; durationS: number; steps: Step[] }
 
@@ -63,6 +70,7 @@ type OsrmStep = {
   distance: number
   duration: number
   maneuver: { type: string; modifier?: string; exit?: number; bearing_after: number; location: [number, number] }
+  intersections?: { lanes?: Lane[] }[]
 }
 
 export async function fetchRoute(from: LatLng, to: LatLng, signal?: AbortSignal): Promise<Route> {
@@ -99,6 +107,7 @@ export async function fetchRoute(from: LatLng, to: LatLng, signal?: AbortSignal)
           bearingAfter: st.maneuver.bearing_after,
           location: [st.maneuver.location[1], st.maneuver.location[0]] as LatLng,
         },
+        lanes: st.intersections?.[0]?.lanes,
       })),
     ),
   }
